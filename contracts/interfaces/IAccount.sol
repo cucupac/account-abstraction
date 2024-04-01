@@ -3,6 +3,8 @@ pragma solidity >=0.7.5;
 
 import "./PackedUserOperation.sol";
 
+// QUESTION: I see validateUserOp, but where is the executeUserOp function?
+// ANSWER: It says that "Account may implement this execute method."
 interface IAccount {
     /**
      * Validate user's signature and nonce
@@ -31,9 +33,7 @@ interface IAccount {
      *                                                    return SIG_VALIDATION_FAILED value (1) for signature failure.
      *                              Note that the validation code cannot use block.timestamp (or block.number) directly.
      */
-    function validateUserOp(
-        PackedUserOperation calldata userOp,
-        bytes32 userOpHash,
-        uint256 missingAccountFunds
-    ) external returns (uint256 validationData);
+    function validateUserOp(PackedUserOperation calldata userOp, bytes32 userOpHash, uint256 missingAccountFunds)
+        external
+        returns (uint256 validationData);
 }

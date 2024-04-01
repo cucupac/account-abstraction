@@ -32,11 +32,12 @@ abstract contract BaseAccount is IAccount {
     function entryPoint() public view virtual returns (IEntryPoint);
 
     /// @inheritdoc IAccount
-    function validateUserOp(
-        PackedUserOperation calldata userOp,
-        bytes32 userOpHash,
-        uint256 missingAccountFunds
-    ) external virtual override returns (uint256 validationData) {
+    function validateUserOp(PackedUserOperation calldata userOp, bytes32 userOpHash, uint256 missingAccountFunds)
+        external
+        virtual
+        override
+        returns (uint256 validationData)
+    {
         _requireFromEntryPoint();
         validationData = _validateSignature(userOp, userOpHash);
         _validateNonce(userOp.nonce);
@@ -47,10 +48,7 @@ abstract contract BaseAccount is IAccount {
      * Ensure the request comes from the known entrypoint.
      */
     function _requireFromEntryPoint() internal view virtual {
-        require(
-            msg.sender == address(entryPoint()),
-            "account: not from EntryPoint"
-        );
+        require(msg.sender == address(entryPoint()), "account: not from EntryPoint");
     }
 
     /**
@@ -67,10 +65,10 @@ abstract contract BaseAccount is IAccount {
      *                          SIG_VALIDATION_FAILED value (1) for signature failure.
      *                          Note that the validation code cannot use block.timestamp (or block.number) directly.
      */
-    function _validateSignature(
-        PackedUserOperation calldata userOp,
-        bytes32 userOpHash
-    ) internal virtual returns (uint256 validationData);
+    function _validateSignature(PackedUserOperation calldata userOp, bytes32 userOpHash)
+        internal
+        virtual
+        returns (uint256 validationData);
 
     /**
      * Validate the nonce of the UserOperation.
@@ -88,8 +86,7 @@ abstract contract BaseAccount is IAccount {
      *
      * solhint-disable-next-line no-empty-blocks
      */
-    function _validateNonce(uint256 nonce) internal view virtual {
-    }
+    function _validateNonce(uint256 nonce) internal view virtual {}
 
     /**
      * Sends to the entrypoint (msg.sender) the missing funds for this transaction.
@@ -100,12 +97,12 @@ abstract contract BaseAccount is IAccount {
      *                              This value MAY be zero, in case there is enough deposit,
      *                              or the userOp has a paymaster.
      */
+
+    // NOTE: This pays the amount that this account's balance on the entry point did not cover.
+    // QUESTION: We just "send" the money -- we don't call deposit. Does receive on paymaster auto-allocate to deposit?
     function _payPrefund(uint256 missingAccountFunds) internal virtual {
         if (missingAccountFunds != 0) {
-            (bool success, ) = payable(msg.sender).call{
-                value: missingAccountFunds,
-                gas: type(uint256).max
-            }("");
+            (bool success,) = payable(msg.sender).call{value: missingAccountFunds, gas: type(uint256).max}("");
             (success);
             //ignore failure (its EntryPoint's job to verify, not account.)
         }
