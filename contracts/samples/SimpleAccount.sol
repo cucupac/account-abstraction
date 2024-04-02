@@ -14,11 +14,11 @@ import "../core/Helpers.sol";
 import "./callback/TokenCallbackHandler.sol";
 
 /**
-  * minimal account.
-  *  this is sample minimal account.
-  *  has execute, eth handling methods
-  *  has a single signer that can send requests through the entryPoint.
-  */
+ * minimal account.
+ *  this is sample minimal account.
+ *  has execute, eth handling methods
+ *  has a single signer that can send requests through the entryPoint.
+ */
 contract SimpleAccount is BaseAccount, TokenCallbackHandler, UUPSUpgradeable, Initializable {
     address public owner;
 
@@ -56,6 +56,8 @@ contract SimpleAccount is BaseAccount, TokenCallbackHandler, UUPSUpgradeable, In
      * @param func the calldata to pass in this call
      */
     function execute(address dest, uint256 value, bytes calldata func) external {
+        // NOTE: it looks like this is arbitrary call data.
+
         _requireFromEntryPointOrOwner();
         _call(dest, value, func);
     }
@@ -84,8 +86,8 @@ contract SimpleAccount is BaseAccount, TokenCallbackHandler, UUPSUpgradeable, In
     /**
      * @dev The _entryPoint member is immutable, to reduce gas consumption.  To upgrade EntryPoint,
      * a new implementation of SimpleAccount must be deployed with the new EntryPoint address, then upgrading
-      * the implementation by calling `upgradeTo()`
-      * @param anOwner the owner (signer) of this account
+     * the implementation by calling `upgradeTo()`
+     * @param anOwner the owner (signer) of this account
      */
     function initialize(address anOwner) public virtual initializer {
         _initialize(anOwner);
@@ -103,10 +105,15 @@ contract SimpleAccount is BaseAccount, TokenCallbackHandler, UUPSUpgradeable, In
 
     /// implement template method of BaseAccount
     function _validateSignature(PackedUserOperation calldata userOp, bytes32 userOpHash)
-    internal override virtual returns (uint256 validationData) {
+        internal
+        virtual
+        override
+        returns (uint256 validationData)
+    {
         bytes32 hash = MessageHashUtils.toEthSignedMessageHash(userOpHash);
-        if (owner != ECDSA.recover(hash, userOp.signature))
+        if (owner != ECDSA.recover(hash, userOp.signature)) {
             return SIG_VALIDATION_FAILED;
+        }
         return SIG_VALIDATION_SUCCESS;
     }
 
@@ -147,4 +154,3 @@ contract SimpleAccount is BaseAccount, TokenCallbackHandler, UUPSUpgradeable, In
         _onlyOwner();
     }
 }
-

@@ -65,17 +65,19 @@ contract EntryPoint is IEntryPoint, StakeManager, NonceManager, ReentrancyGuard,
     }
 
     /**
-     * Execute a user operation.
+     * Okay, so this is going to actually execute the user operation... (like increment a counter)
      * @param opIndex    - Index into the opInfo array.
      * @param userOp     - The userOp to execute.
      * @param opInfo     - The opInfo filled by validatePrepayment for this userOp.
-     * @return collected - The total amount this userOp paid.
+     * @return collected - The total amount this userOp paid -- QUESTION: gas?
      */
     function _executeUserOp(uint256 opIndex, PackedUserOperation calldata userOp, UserOpInfo memory opInfo)
         internal
         returns (uint256 collected)
     {
+        // 1. get the amount of gas we have left for the transaction
         uint256 preGas = gasleft();
+
         bytes memory context = getMemoryBytesFromOffset(opInfo.contextOffset);
         bool success;
         {
@@ -88,15 +90,28 @@ contract EntryPoint is IEntryPoint, StakeManager, NonceManager, ReentrancyGuard,
             bytes4 methodSig;
             assembly {
                 let len := callData.length
+                // NOTE: if the call data is greater thatn 3, load the method signature
                 if gt(len, 3) { methodSig := calldataload(callData.offset) }
             }
+            // If the intended method signature is executeUserOp, encode with user op
             if (methodSig == IAccountExecute.executeUserOp.selector) {
+                // encode the call with the parameters
+                // NOTE: user op has been validated by this point
+                // NOTE: the userOp hash is a hash of the userOp
+
+                // NOTE: encode the destination contract's function -- get the bytes
                 bytes memory executeUserOp = abi.encodeCall(IAccountExecute.executeUserOp, (userOp, opInfo.userOpHash));
+
+                // NOTE: encode that by calling the innerHandleOp function
                 innerCall = abi.encodeCall(this.innerHandleOp, (executeUserOp, opInfo, context));
             } else {
+                // NOTE: The intended method sig is not executeUserOp --> so we just pass in call data --> userOp is not passed in
+                // QUESTION: it seems to be a question of does the account need the userOp? If not, no need to implement executeUserOp
+                // QUESTION: why would it not be execute user op?
                 innerCall = abi.encodeCall(this.innerHandleOp, (callData, opInfo, context));
             }
             assembly ("memory-safe") {
+                // NOTE: either way, we call inner call (with userOp, or just raw call data)
                 success := call(gas(), address(), 0, add(innerCall, 0x20), mload(innerCall), 0, 32)
                 collected := mload(0)
                 mstore(0x40, saveFreePtr)
@@ -132,6 +147,8 @@ contract EntryPoint is IEntryPoint, StakeManager, NonceManager, ReentrancyGuard,
 
                 uint256 actualGas = preGas - gasleft() + opInfo.preOpGas;
                 collected = _postExecution(IPaymaster.PostOpMode.postOpReverted, opInfo, context, actualGas);
+
+                // NOTE: collected is the total amount of ETH paid for gas
             }
         }
     }
@@ -156,24 +173,40 @@ contract EntryPoint is IEntryPoint, StakeManager, NonceManager, ReentrancyGuard,
     }
 
     /// @inheritdoc IEntryPoint
+    /// @param ops         - The user operations to execute.
+    /// @param beneficiary - The address to receive the fees (the bundler)
     function handleOps(PackedUserOperation[] calldata ops, address payable beneficiary) public nonReentrant {
+        // NOTE: see what the length is of the opeations
         uint256 opslen = ops.length;
+
+        // NOTE: creating an array of empty structs to ostensibly fill with data
         UserOpInfo[] memory opInfos = new UserOpInfo[](opslen);
 
+        // NOTE: Validate all users ops sent in.
+        // QUESTION: How does this interface with the aggregated signatures?
         unchecked {
             for (uint256 i = 0; i < opslen; i++) {
                 UserOpInfo memory opInfo = opInfos[i];
+
+                // NOTE: send actual op sent in by user and along with an object to collect some data with (like gas used)
+                // NOTE: here we are validating the payments for both account and paymaster
                 (uint256 validationData, uint256 pmValidationData) = _validatePrepayment(i, ops[i], opInfo);
+
+                // NOTE: ensures the validation data from both the account and the paymaster are not "stale".
                 _validateAccountAndPaymasterValidationData(i, validationData, pmValidationData, address(0));
             }
 
             uint256 collected = 0;
             emit BeforeExecution();
 
+            // NOTE: execute all of the user ops (after all are validated)
             for (uint256 i = 0; i < opslen; i++) {
+                // NOTE: 1. execute transaction
+                // NOTE: 2. increment the account or paymaster's deposit with the refund
                 collected += _executeUserOp(i, ops[i], opInfos[i]);
             }
 
+            // NOTE: pay the executor (bundler) for submitting the transactions
             _compensate(beneficiary, collected);
         }
     }
@@ -270,17 +303,24 @@ contract EntryPoint is IEntryPoint, StakeManager, NonceManager, ReentrancyGuard,
 
     /**
      * Inner function to handle a UserOperation.
-     * Must be declared "external" to open a call context, but it can only be called by handleOps.
+     * Must be declared "external" to open a call context, but it can only be called by handleOps. // NOTE: important
      * @param callData - The callData to execute.
      * @param opInfo   - The UserOpInfo struct.
      * @param context  - The context bytes.
      * @return actualGasCost - the actual cost in eth this UserOperation paid for gas
+     *
+     *  // NOTE: calldata is sent in here. It's being called on the account contract.
+     *  // NOTE: this means that the account contract must have a function that can handle this call data.
+     *  // NOTE: this means that executeUserOp must be implemented to, say, increment a counter.
+     *  // NOTE: cases where executeUserOp is not implement are those where the destination contract is the account contract itself.
      */
     function innerHandleOp(bytes memory callData, UserOpInfo memory opInfo, bytes calldata context)
         external
         returns (uint256 actualGasCost)
     {
         uint256 preGas = gasleft();
+
+        // NOTE: require can only be called by itself
         require(msg.sender == address(this), "AA92 internal call only");
         MemoryUserOp memory mUserOp = opInfo.mUserOp;
 
@@ -297,7 +337,9 @@ contract EntryPoint is IEntryPoint, StakeManager, NonceManager, ReentrancyGuard,
 
         IPaymaster.PostOpMode mode = IPaymaster.PostOpMode.opSucceeded;
         if (callData.length > 0) {
+            // NOTE: calls the function on the sender by passing the call data
             bool success = Exec.call(mUserOp.sender, 0, callData, callGasLimit);
+
             if (!success) {
                 bytes memory result = Exec.getReturnData(REVERT_REASON_MAX_LEN);
                 if (result.length > 0) {
@@ -315,6 +357,9 @@ contract EntryPoint is IEntryPoint, StakeManager, NonceManager, ReentrancyGuard,
 
     /// @inheritdoc IEntryPoint
     function getUserOpHash(PackedUserOperation calldata userOp) public view returns (bytes32) {
+        // NOTE: .hash() is a function in the user operation lib
+        // NOTE: it simiply hashes the user operation, hashed_op
+        // NOTE the returned hash hashes (hashed_op, this adderss, and the chain_id) to prevent replay attacks
         return keccak256(abi.encode(userOp.hash(), address(this), block.chainid));
     }
 
@@ -326,6 +371,7 @@ contract EntryPoint is IEntryPoint, StakeManager, NonceManager, ReentrancyGuard,
     function _copyUserOpToMemory(PackedUserOperation calldata userOp, MemoryUserOp memory mUserOp) internal pure {
         mUserOp.sender = userOp.sender;
         mUserOp.nonce = userOp.nonce;
+
         (mUserOp.verificationGasLimit, mUserOp.callGasLimit) = UserOperationLib.unpackUints(userOp.accountGasLimits);
         mUserOp.preVerificationGas = userOp.preVerificationGas;
         (mUserOp.maxPriorityFeePerGas, mUserOp.maxFeePerGas) = UserOperationLib.unpackUints(userOp.gasFees);
@@ -522,6 +568,9 @@ contract EntryPoint is IEntryPoint, StakeManager, NonceManager, ReentrancyGuard,
      * @param validationData          - The account validationData.
      * @param paymasterValidationData - The paymaster validationData.
      * @param expectedAggregator      - The expected aggregator.
+     *
+     * NOTE: ensure that the validation data returned from the account and paymaster is valid.
+     * NOTE: this protects against a malicious bundler "waiting too long" to submit the transaction.
      */
     function _validateAccountAndPaymasterValidationData(
         uint256 opIndex,
@@ -529,6 +578,7 @@ contract EntryPoint is IEntryPoint, StakeManager, NonceManager, ReentrancyGuard,
         uint256 paymasterValidationData,
         address expectedAggregator
     ) internal view {
+        // NOTE: first validate validation data for account
         (address aggregator, bool outOfTimeRange) = _getValidationData(validationData);
         if (expectedAggregator != aggregator) {
             revert FailedOp(opIndex, "AA24 signature error");
@@ -564,6 +614,8 @@ contract EntryPoint is IEntryPoint, StakeManager, NonceManager, ReentrancyGuard,
         }
         ValidationData memory data = _parseValidationData(validationData);
         // solhint-disable-next-line not-rely-on-time
+
+        // NOTE: bool as to wheather the data is valid or not, based on time
         outOfTimeRange = block.timestamp > data.validUntil || block.timestamp < data.validAfter;
         aggregator = data.aggregator;
     }
@@ -587,8 +639,13 @@ contract EntryPoint is IEntryPoint, StakeManager, NonceManager, ReentrancyGuard,
         returns (uint256 validationData, uint256 paymasterValidationData)
     {
         uint256 preGas = gasleft();
+
+        // NOTE: get the userOp in memory format instead of calldata
+        // QUESTION: Why though?
         MemoryUserOp memory mUserOp = outOpInfo.mUserOp;
         _copyUserOpToMemory(userOp, mUserOp);
+
+        // NOTE: hash the user op and store it in the outOpInfo struct
         outOpInfo.userOpHash = getUserOpHash(userOp);
 
         // Validate all numeric values in userOp are well below 128 bit, so they can safely be added
@@ -702,6 +759,8 @@ contract EntryPoint is IEntryPoint, StakeManager, NonceManager, ReentrancyGuard,
                 }
             } else {
                 uint256 refund = prefund - actualGasCost;
+
+                // NOTE: Increment deposit with refund here.
                 _incrementDeposit(refundAddress, refund);
                 bool success = mode == IPaymaster.PostOpMode.opSucceeded;
                 emitUserOperationEvent(opInfo, success, actualGasCost, actualGas);
